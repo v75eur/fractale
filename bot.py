@@ -83,12 +83,9 @@ def get_candles(sym, interval="1h", range_days="60d"):
         return []
 
 def detect_trend(candles, period=20):
-    """Détecte la tendance avec EMA 50"""
     if len(candles) < period:
         return "INCONNUE", 0
     closes = np.array([c["c"] for c in candles[-period:]])
-    ema = pd.Series(closes).ewm(span=period, adjust=False).mean().values[-1]
-    last_close = closes[-1]
     slope = (closes[-1] - closes[-5]) / closes[-5] if len(closes) >= 5 else 0
     if slope > 0.001:
         return "HAUSSIERE", slope
@@ -97,34 +94,28 @@ def detect_trend(candles, period=20):
     return "LATERALE", slope
 
 def detect_pattern(candle, prev_candle):
-    """Détecte les patterns de retournement"""
     body = abs(candle["c"] - candle["o"])
     upper_wick = candle["h"] - max(candle["c"], candle["o"])
     lower_wick = min(candle["c"], candle["o"]) - candle["l"]
     pattern = None
     
-    # Pin Bar HAUSSIER (mèche basse)
     if lower_wick > body * 2 and lower_wick > upper_wick * 2:
         pattern = "PIN_BAR_HAUT"
-    # Pin Bar BAISSIER (mèche haute)
     elif upper_wick > body * 2 and upper_wick > lower_wick * 2:
         pattern = "PIN_BAR_BAS"
     
-    # Engulfing HAUSSIER
-    if prev_candle and candle["c"] > prev_candle["o"] and candle["o"] < prev_candle["c"] and body > prev_candle["h"] - prev_candle["l"]:
-        pattern = "ENGULFING_HAUT"
-    # Engulfing BAISSIER
-    elif prev_candle and candle["c"] < prev_candle["o"] and candle["o"] > prev_candle["c"] and body > prev_candle["h"] - prev_candle["l"]:
-        pattern = "ENGULFING_BAS"
+    if prev_candle:
+        if candle["c"] > prev_candle["o"] and candle["o"] < prev_candle["c"] and body > prev_candle["h"] - prev_candle["l"]:
+            pattern = "ENGULFING_HAUT"
+        elif candle["c"] < prev_candle["o"] and candle["o"] > prev_candle["c"] and body > prev_candle["h"] - prev_candle["l"]:
+            pattern = "ENGULFING_BAS"
     
-    # Doji
     if body < (candle["h"] - candle["l"]) * 0.1:
         pattern = "DOJI"
     
     return pattern
 
 def detect_support_resistance(candles, lookback=20):
-    """Détecte les niveaux S/R simples"""
     if len(candles) < lookback:
         return None, None
     highs = [c["h"] for c in candles[-lookback:]]
@@ -166,7 +157,6 @@ def analyze_fractale(key, info):
     log(f"🔍 Analyse Fractale {key}...")
     src = info.get("source", "yahoo")
     
-    # Récupérer les 5 timeframes
     if src == "deriv":
         candles_h8 = get_candles_deriv(info["symbol"], granularity=28800)
         candles_h4 = get_candles_deriv(info["symbol"], granularity=14400)
@@ -205,46 +195,51 @@ def analyze_fractale(key, info):
         log(f"⚠️ Pas de données pour {key}")
         return
     
-    # Analyse des tendances
-    trend_h8, slope_h8 = detect_trend(candles_h8)
+    # Analyses
+    trend_h8, _ = detect_trend(candles_h8)
     trend_h4, _ = detect_trend(candles_h4)
     
-    # Détection pattern H2
+    # Pattern H2
     pattern_h2 = None
     if len(candles_h2) >= 2:
         pattern_h2 = detect_pattern(candles_h2[-1], candles_h2[-2])
     
-    # Prix
+    # S/R H1
+    res_h1, sup_h1 = detect_support_resistance(candles_h1)
+    
+    # Signal M15
+    pattern_m15 = None
+    if len(candles_m15) >= 2:
+        pattern_m15 = detect_pattern(candles_m15[-1], candles_m15[-2])
+    
     cp = candles_m15[-1]["c"]
     dec = info["dec"]
-    
-    # Support/Résistance H1
-    res, sup = detect_support_resistance(candles_h1)
     
     msg = ""
     conseil = ""
     condition_remplie = False
     
-    # ===== CONDITIONS =====
-    # 1. H8 et H4 alignés
+    # Conditions
     if trend_h8 == trend_h4 and trend_h8 != "LATERALE" and trend_h8 != "INCONNUE":
         
-        # 2. Pattern H2 dans le sens de la tendance
         if trend_h8 == "HAUSSIERE":
-            if pattern_h2 in ["PIN_BAR_HAUT", "ENGULFING_HAUT", "DOJI"]:
-                # 3. Prix proche du support H1 (ou cassure)
-                if sup and cp <= sup * 1.005:
-                    # 4. Confirmation M15 (prix au-dessus de la moyenne)
-                    condition_remplie = True
-                    conseil = f"ACHAT (H8/H4 HAUSSIER | Pattern: {pattern_h2} | Support H1)"
-                    msg = f"SIGNAL ACHAT FRACTALE\nTendance H8: {trend_h8} | H4: {trend_h4}\nPattern H2: {pattern_h2}\nSupport H1: {sup:.{dec}f}\nPrix proche du support"
+            # Signal M15 : Pin Bar HAUT ou Engulfing HAUT
+            if pattern_m15 in ["PIN_BAR_HAUT", "ENGULFING_HAUT", "DOJI"]:
+                # Confirmation H1 : prix proche du support
+                if sup_h1 and cp <= sup_h1 * 1.005:
+                    # Pattern H2 en renfort
+                    if pattern_h2 in ["PIN_BAR_HAUT", "ENGULFING_HAUT", "DOJI"]:
+                        condition_remplie = True
+                        conseil = f"ACHAT (Signal M15: {pattern_m15} | H1 Support | H2: {pattern_h2})"
+                        msg = f"SIGNAL ACHAT FRACTALE\nTendance H8: {trend_h8} | H4: {trend_h4}\nSignal M15: {pattern_m15}\nSupport H1: {sup_h1:.{dec}f}\nPattern H2: {pattern_h2}"
         
         elif trend_h8 == "BAISSIERE":
-            if pattern_h2 in ["PIN_BAR_BAS", "ENGULFING_BAS", "DOJI"]:
-                if res and cp >= res * 0.995:
-                    condition_remplie = True
-                    conseil = f"VENTE (H8/H4 BAISSIER | Pattern: {pattern_h2} | Resistance H1)"
-                    msg = f"SIGNAL VENTE FRACTALE\nTendance H8: {trend_h8} | H4: {trend_h4}\nPattern H2: {pattern_h2}\nResistance H1: {res:.{dec}f}\nPrix proche de la resistance"
+            if pattern_m15 in ["PIN_BAR_BAS", "ENGULFING_BAS", "DOJI"]:
+                if res_h1 and cp >= res_h1 * 0.995:
+                    if pattern_h2 in ["PIN_BAR_BAS", "ENGULFING_BAS", "DOJI"]:
+                        condition_remplie = True
+                        conseil = f"VENTE (Signal M15: {pattern_m15} | H1 Resistance | H2: {pattern_h2})"
+                        msg = f"SIGNAL VENTE FRACTALE\nTendance H8: {trend_h8} | H4: {trend_h4}\nSignal M15: {pattern_m15}\nResistance H1: {res_h1:.{dec}f}\nPattern H2: {pattern_h2}"
     
     if condition_remplie:
         full_msg = f"{msg}\n\nPrix: {cp:.{dec}f}\n{datetime.now(pytz.timezone('Africa/Porto-Novo')).strftime('%H:%M')}H Benin\nFractale Bot"
@@ -252,7 +247,7 @@ def analyze_fractale(key, info):
         log(f"📤 SIGNAL {key} - {conseil}")
         send(info["ntfy"], f"ALERTE {key} - {conseil}", full_msg)
         
-        # Graphiques
+        # 5 graphiques
         img_h8 = chart_fractale(candles_h8, f"{info['name']} H8", cp, dec, None, trend_h8)
         if img_h8:
             time.sleep(1)
@@ -271,12 +266,12 @@ def analyze_fractale(key, info):
         img_h1 = chart_fractale(candles_h1, f"{info['name']} H1", cp, dec, None, trend_h4)
         if img_h1:
             time.sleep(1)
-            send(info["ntfy"], f"{key} H1 - Entree", "Point d'entree", img_h1)
+            send(info["ntfy"], f"{key} H1 - Confirmation", "Confirmation H1", img_h1)
         
-        img_m15 = chart_fractale(candles_m15, f"{info['name']} M15", cp, dec, None, trend_h4)
+        img_m15 = chart_fractale(candles_m15, f"{info['name']} M15", cp, dec, pattern_m15, trend_h4)
         if img_m15:
             time.sleep(1)
-            send(info["ntfy"], f"{key} M15 - Renfort", "Confirmation entree", img_m15)
+            send(info["ntfy"], f"{key} M15 - Signal", f"Signal {pattern_m15}", img_m15)
     else:
         log(f"⏭️ SILENCE {key} - Pas de signal Fractale")
 
