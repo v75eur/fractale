@@ -82,6 +82,29 @@ def get_candles(sym, interval="1h", range_days="60d"):
         log(f"❌ Yahoo {sym}: {e}")
         return []
 
+def calc_sma(candles, period=3):
+    closes = [c["c"] for c in candles]
+    if len(closes) < period:
+        return [None] * len(closes)
+    sma = []
+    for i in range(len(closes)):
+        if i < period - 1:
+            sma.append(None)
+        else:
+            sma.append(sum(closes[i-period+1:i+1]) / period)
+    return sma
+
+def detect_cross_sma(sma3, sma10):
+    if len(sma3) < 2 or len(sma10) < 2:
+        return None, False
+    if sma3[-1] is None or sma10[-1] is None or sma3[-2] is None or sma10[-2] is None:
+        return None, False
+    if sma3[-1] > sma10[-1] and sma3[-2] <= sma10[-2]:
+        return "HAUT", True
+    elif sma3[-1] < sma10[-1] and sma3[-2] >= sma10[-2]:
+        return "BAS", True
+    return None, False
+
 def detect_trend(candles, period=20):
     if len(candles) < period:
         return "INCONNUE", 0
@@ -115,14 +138,7 @@ def detect_pattern(candle, prev_candle):
     
     return pattern
 
-def detect_support_resistance(candles, lookback=20):
-    if len(candles) < lookback:
-        return None, None
-    highs = [c["h"] for c in candles[-lookback:]]
-    lows = [c["l"] for c in candles[-lookback:]]
-    return max(highs), min(lows)
-
-def chart_fractale(candles, title, price, dec=2, pattern=None, trend=None):
+def chart_fractale_sma(candles, sma3, sma10, title, price, dec=2, cross_type=None, trend=None):
     if len(candles) < 10:
         return None
     fig, ax = plt.subplots(figsize=(18, 10))
@@ -134,17 +150,21 @@ def chart_fractale(candles, title, price, dec=2, pattern=None, trend=None):
         ax.plot([i, i], [c["l"], c["h"]], color=col, lw=1.2)
         ax.add_patch(plt.Rectangle((i-0.35, min(c["o"], c["c"])), 0.7, abs(c["c"]-c["o"]) or 0.0001, facecolor=col, edgecolor=col))
     
+    ax.plot(range(len(sma3)), sma3, color='#00b4d8', lw=2, label='SMA 3')
+    ax.plot(range(len(sma10)), sma10, color='#ff6b6b', lw=2, label='SMA 10')
+    
     ax.axhline(price, color='#f59e0b', ls='-.', lw=2, alpha=0.7)
     ax.text(len(candles)-1, price, f'  {price:.{dec}f}', color='#f59e0b', fontsize=12, fontweight='bold')
     
-    if pattern:
-        ax.set_title(f"{title} - Pattern: {pattern} | Tendance: {trend}", color='white', fontsize=14, fontweight='bold')
+    if cross_type:
+        ax.set_title(f"{title} - Croisement SMA {cross_type} | Tendance: {trend}", color='white', fontsize=14, fontweight='bold')
     else:
         ax.set_title(f"{title} - {trend}", color='white', fontsize=14, fontweight='bold')
     
     ax.set_ylabel("Prix", color='white', fontsize=12)
     ax.tick_params(colors='white')
     ax.grid(True, alpha=0.15, color='gray')
+    ax.legend(loc='upper left', facecolor='#1a1a2e', edgecolor='#555', labelcolor='white', framealpha=0.9)
     
     plt.tight_layout(pad=1.5)
     buf = io.BytesIO()
@@ -199,18 +219,20 @@ def analyze_fractale(key, info):
     trend_h8, _ = detect_trend(candles_h8)
     trend_h4, _ = detect_trend(candles_h4)
     
+    # SMA H1
+    sma3_h1 = calc_sma(candles_h1, 3)
+    sma10_h1 = calc_sma(candles_h1, 10)
+    cross_h1, cross_h1_bool = detect_cross_sma(sma3_h1, sma10_h1)
+    
+    # SMA M15
+    sma3_m15 = calc_sma(candles_m15, 3)
+    sma10_m15 = calc_sma(candles_m15, 10)
+    cross_m15, cross_m15_bool = detect_cross_sma(sma3_m15, sma10_m15)
+    
     # Pattern H2
     pattern_h2 = None
     if len(candles_h2) >= 2:
         pattern_h2 = detect_pattern(candles_h2[-1], candles_h2[-2])
-    
-    # S/R H1
-    res_h1, sup_h1 = detect_support_resistance(candles_h1)
-    
-    # Signal M15
-    pattern_m15 = None
-    if len(candles_m15) >= 2:
-        pattern_m15 = detect_pattern(candles_m15[-1], candles_m15[-2])
     
     cp = candles_m15[-1]["c"]
     dec = info["dec"]
@@ -223,23 +245,18 @@ def analyze_fractale(key, info):
     if trend_h8 == trend_h4 and trend_h8 != "LATERALE" and trend_h8 != "INCONNUE":
         
         if trend_h8 == "HAUSSIERE":
-            # Signal M15 : Pin Bar HAUT ou Engulfing HAUT
-            if pattern_m15 in ["PIN_BAR_HAUT", "ENGULFING_HAUT", "DOJI"]:
-                # Confirmation H1 : prix proche du support
-                if sup_h1 and cp <= sup_h1 * 1.005:
-                    # Pattern H2 en renfort
-                    if pattern_h2 in ["PIN_BAR_HAUT", "ENGULFING_HAUT", "DOJI"]:
-                        condition_remplie = True
-                        conseil = f"ACHAT (Signal M15: {pattern_m15} | H1 Support | H2: {pattern_h2})"
-                        msg = f"SIGNAL ACHAT FRACTALE\nTendance H8: {trend_h8} | H4: {trend_h4}\nSignal M15: {pattern_m15}\nSupport H1: {sup_h1:.{dec}f}\nPattern H2: {pattern_h2}"
+            if cross_h1_bool and cross_h1 == "HAUT" and cross_m15_bool and cross_m15 == "HAUT":
+                if pattern_h2 in ["PIN_BAR_HAUT", "ENGULFING_HAUT", "DOJI"]:
+                    condition_remplie = True
+                    conseil = f"ACHAT (H1 SMA HAUT + M15 SMA HAUT | H2: {pattern_h2})"
+                    msg = f"SIGNAL ACHAT FRACTALE\nTendance H8: {trend_h8} | H4: {trend_h4}\nH1: Croisement SMA 3/10 HAUT\nM15: Croisement SMA 3/10 HAUT\nPattern H2: {pattern_h2}"
         
         elif trend_h8 == "BAISSIERE":
-            if pattern_m15 in ["PIN_BAR_BAS", "ENGULFING_BAS", "DOJI"]:
-                if res_h1 and cp >= res_h1 * 0.995:
-                    if pattern_h2 in ["PIN_BAR_BAS", "ENGULFING_BAS", "DOJI"]:
-                        condition_remplie = True
-                        conseil = f"VENTE (Signal M15: {pattern_m15} | H1 Resistance | H2: {pattern_h2})"
-                        msg = f"SIGNAL VENTE FRACTALE\nTendance H8: {trend_h8} | H4: {trend_h4}\nSignal M15: {pattern_m15}\nResistance H1: {res_h1:.{dec}f}\nPattern H2: {pattern_h2}"
+            if cross_h1_bool and cross_h1 == "BAS" and cross_m15_bool and cross_m15 == "BAS":
+                if pattern_h2 in ["PIN_BAR_BAS", "ENGULFING_BAS", "DOJI"]:
+                    condition_remplie = True
+                    conseil = f"VENTE (H1 SMA BAS + M15 SMA BAS | H2: {pattern_h2})"
+                    msg = f"SIGNAL VENTE FRACTALE\nTendance H8: {trend_h8} | H4: {trend_h4}\nH1: Croisement SMA 3/10 BAS\nM15: Croisement SMA 3/10 BAS\nPattern H2: {pattern_h2}"
     
     if condition_remplie:
         full_msg = f"{msg}\n\nPrix: {cp:.{dec}f}\n{datetime.now(pytz.timezone('Africa/Porto-Novo')).strftime('%H:%M')}H Benin\nFractale Bot"
@@ -248,35 +265,35 @@ def analyze_fractale(key, info):
         send(info["ntfy"], f"ALERTE {key} - {conseil}", full_msg)
         
         # 5 graphiques
-        img_h8 = chart_fractale(candles_h8, f"{info['name']} H8", cp, dec, None, trend_h8)
+        img_h8 = chart_fractale_sma(candles_h8, [], [], f"{info['name']} H8", cp, dec, None, trend_h8)
         if img_h8:
             time.sleep(1)
             send(info["ntfy"], f"{key} H8 - Tendance", f"Tendance {trend_h8}", img_h8)
         
-        img_h4 = chart_fractale(candles_h4, f"{info['name']} H4", cp, dec, None, trend_h4)
+        img_h4 = chart_fractale_sma(candles_h4, [], [], f"{info['name']} H4", cp, dec, None, trend_h4)
         if img_h4:
             time.sleep(1)
             send(info["ntfy"], f"{key} H4 - Confirmation", f"Confirmation {trend_h4}", img_h4)
         
-        img_h2 = chart_fractale(candles_h2, f"{info['name']} H2", cp, dec, pattern_h2, trend_h4)
+        img_h2 = chart_fractale_sma(candles_h2, [], [], f"{info['name']} H2", cp, dec, None, pattern_h2)
         if img_h2:
             time.sleep(1)
             send(info["ntfy"], f"{key} H2 - Pattern", f"Pattern {pattern_h2}", img_h2)
         
-        img_h1 = chart_fractale(candles_h1, f"{info['name']} H1", cp, dec, None, trend_h4)
+        img_h1 = chart_fractale_sma(candles_h1, sma3_h1, sma10_h1, f"{info['name']} H1", cp, dec, cross_h1, trend_h4)
         if img_h1:
             time.sleep(1)
-            send(info["ntfy"], f"{key} H1 - Confirmation", "Confirmation H1", img_h1)
+            send(info["ntfy"], f"{key} H1 - SMA", f"Croisement SMA 3/10 {cross_h1}", img_h1)
         
-        img_m15 = chart_fractale(candles_m15, f"{info['name']} M15", cp, dec, pattern_m15, trend_h4)
+        img_m15 = chart_fractale_sma(candles_m15, sma3_m15, sma10_m15, f"{info['name']} M15", cp, dec, cross_m15, trend_h4)
         if img_m15:
             time.sleep(1)
-            send(info["ntfy"], f"{key} M15 - Signal", f"Signal {pattern_m15}", img_m15)
+            send(info["ntfy"], f"{key} M15 - SMA", f"Croisement SMA 3/10 {cross_m15}", img_m15)
     else:
         log(f"⏭️ SILENCE {key} - Pas de signal Fractale")
 
 if __name__ == "__main__":
-    log("🚀 FRACTALE BOT - H8 + H4 + H2 + H1 + M15")
+    log("🚀 FRACTALE BOT - SMA 3/10 (H8+H4+H2+H1+M15)")
     now = datetime.now(pytz.timezone('Africa/Porto-Novo'))
     h, j = now.hour, now.weekday()
     
