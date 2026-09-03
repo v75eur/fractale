@@ -116,29 +116,85 @@ def detect_trend(candles, period=20):
         return "BAISSIERE", slope
     return "LATERALE", slope
 
-def detect_pattern(candle, prev_candle):
-    body = abs(candle["c"] - candle["o"])
-    upper_wick = candle["h"] - max(candle["c"], candle["o"])
-    lower_wick = min(candle["c"], candle["o"]) - candle["l"]
-    pattern = None
+def detect_structure_pattern(candles, idx):
+    """Détecte les structures de retournement (2-3 bougies)"""
+    if idx < 2:
+        return None
     
-    if lower_wick > body * 2 and lower_wick > upper_wick * 2:
-        pattern = "PIN_BAR_HAUT"
-    elif upper_wick > body * 2 and upper_wick > lower_wick * 2:
-        pattern = "PIN_BAR_BAS"
+    c0 = candles[idx-2] if idx >= 2 else None
+    c1 = candles[idx-1]
+    c2 = candles[idx]
     
-    if prev_candle:
-        if candle["c"] > prev_candle["o"] and candle["o"] < prev_candle["c"] and body > prev_candle["h"] - prev_candle["l"]:
-            pattern = "ENGULFING_HAUT"
-        elif candle["c"] < prev_candle["o"] and candle["o"] > prev_candle["c"] and body > prev_candle["h"] - prev_candle["l"]:
-            pattern = "ENGULFING_BAS"
+    # ===== 3 BOUGIES =====
+    if c0 and c1 and c2:
+        body0 = abs(c0["c"] - c0["o"])
+        body1 = abs(c1["c"] - c1["o"])
+        body2 = abs(c2["c"] - c2["o"])
+        
+        # Étoile du matin : rouge + doji + verte
+        if c0["c"] < c0["o"] and body1 < (c1["h"] - c1["l"]) * 0.1 and c2["c"] > c2["o"]:
+            return "ETOILE_MATIN"
+        
+        # Étoile du soir : verte + doji + rouge
+        if c0["c"] > c0["o"] and body1 < (c1["h"] - c1["l"]) * 0.1 and c2["c"] < c2["o"]:
+            return "ETOILE_SOIR"
+        
+        # Trois soldats blancs : 3 vertes consécutives
+        if c0["c"] > c0["o"] and c1["c"] > c1["o"] and c2["c"] > c2["o"]:
+            if c1["c"] > c0["c"] and c2["c"] > c1["c"]:
+                return "TROIS_SOLDATS_BLANCS"
+        
+        # Trois corbeaux noirs : 3 rouges consécutives
+        if c0["c"] < c0["o"] and c1["c"] < c1["o"] and c2["c"] < c2["o"]:
+            if c1["c"] < c0["c"] and c2["c"] < c1["c"]:
+                return "TROIS_CORBEAUX_NOIRS"
     
-    if body < (candle["h"] - candle["l"]) * 0.1:
-        pattern = "DOJI"
+    # ===== 2 BOUGIES =====
+    if c1 and c2:
+        body1 = abs(c1["c"] - c1["o"])
+        body2 = abs(c2["c"] - c2["o"])
+        
+        # Harami haussier : rouge + petite verte à l'intérieur
+        if c1["c"] < c1["o"] and c2["c"] > c2["o"]:
+            if c2["h"] <= c1["h"] and c2["l"] >= c1["l"]:
+                return "HARAMI_HAUT"
+        
+        # Harami baissier : verte + petite rouge à l'intérieur
+        if c1["c"] > c1["o"] and c2["c"] < c2["o"]:
+            if c2["h"] <= c1["h"] and c2["l"] >= c1["l"]:
+                return "HARAMI_BAS"
+        
+        # Engulfing haussier : rouge + verte englobante
+        if c1["c"] < c1["o"] and c2["c"] > c2["o"]:
+            if c2["h"] >= c1["h"] and c2["l"] <= c1["l"]:
+                return "ENGULFING_HAUT"
+        
+        # Engulfing baissier : verte + rouge englobante
+        if c1["c"] > c1["o"] and c2["c"] < c2["o"]:
+            if c2["h"] >= c1["h"] and c2["l"] <= c1["l"]:
+                return "ENGULFING_BAS"
     
-    return pattern
+    # ===== 1 BOUGIE =====
+    if c2:
+        body2 = abs(c2["c"] - c2["o"])
+        upper_wick = c2["h"] - max(c2["c"], c2["o"])
+        lower_wick = min(c2["c"], c2["o"]) - c2["l"]
+        
+        # Pin Bar HAUT
+        if lower_wick > body2 * 2 and lower_wick > upper_wick * 2:
+            return "PIN_BAR_HAUT"
+        
+        # Pin Bar BAS
+        if upper_wick > body2 * 2 and upper_wick > lower_wick * 2:
+            return "PIN_BAR_BAS"
+        
+        # Doji
+        if body2 < (c2["h"] - c2["l"]) * 0.1:
+            return "DOJI"
+    
+    return None
 
-def chart_fractale_sma(candles, sma3, sma10, title, price, dec=2, cross_type=None, trend=None):
+def chart_fractale_sma(candles, sma3, sma10, title, price, dec=2, cross_type=None, trend=None, pattern=None):
     if len(candles) < 10:
         return None
     fig, ax = plt.subplots(figsize=(18, 10))
@@ -156,7 +212,9 @@ def chart_fractale_sma(candles, sma3, sma10, title, price, dec=2, cross_type=Non
     ax.axhline(price, color='#f59e0b', ls='-.', lw=2, alpha=0.7)
     ax.text(len(candles)-1, price, f'  {price:.{dec}f}', color='#f59e0b', fontsize=12, fontweight='bold')
     
-    if cross_type:
+    if pattern:
+        ax.set_title(f"{title} - Pattern: {pattern} | Tendance: {trend}", color='white', fontsize=14, fontweight='bold')
+    elif cross_type:
         ax.set_title(f"{title} - Croisement SMA {cross_type} | Tendance: {trend}", color='white', fontsize=14, fontweight='bold')
     else:
         ax.set_title(f"{title} - {trend}", color='white', fontsize=14, fontweight='bold')
@@ -229,10 +287,10 @@ def analyze_fractale(key, info):
     sma10_m15 = calc_sma(candles_m15, 10)
     cross_m15, cross_m15_bool = detect_cross_sma(sma3_m15, sma10_m15)
     
-    # Pattern H2
+    # Pattern H2 (structure de retournement)
     pattern_h2 = None
-    if len(candles_h2) >= 2:
-        pattern_h2 = detect_pattern(candles_h2[-1], candles_h2[-2])
+    if len(candles_h2) >= 3:
+        pattern_h2 = detect_structure_pattern(candles_h2, len(candles_h2)-1)
     
     cp = candles_m15[-1]["c"]
     dec = info["dec"]
@@ -246,14 +304,14 @@ def analyze_fractale(key, info):
         
         if trend_h8 == "HAUSSIERE":
             if cross_h1_bool and cross_h1 == "HAUT" and cross_m15_bool and cross_m15 == "HAUT":
-                if pattern_h2 in ["PIN_BAR_HAUT", "ENGULFING_HAUT", "DOJI"]:
+                if pattern_h2 in ["ETOILE_MATIN", "TROIS_SOLDATS_BLANCS", "HARAMI_HAUT", "ENGULFING_HAUT", "PIN_BAR_HAUT"]:
                     condition_remplie = True
                     conseil = f"ACHAT (H1 SMA HAUT + M15 SMA HAUT | H2: {pattern_h2})"
                     msg = f"SIGNAL ACHAT FRACTALE\nTendance H8: {trend_h8} | H4: {trend_h4}\nH1: Croisement SMA 3/10 HAUT\nM15: Croisement SMA 3/10 HAUT\nPattern H2: {pattern_h2}"
         
         elif trend_h8 == "BAISSIERE":
             if cross_h1_bool and cross_h1 == "BAS" and cross_m15_bool and cross_m15 == "BAS":
-                if pattern_h2 in ["PIN_BAR_BAS", "ENGULFING_BAS", "DOJI"]:
+                if pattern_h2 in ["ETOILE_SOIR", "TROIS_CORBEAUX_NOIRS", "HARAMI_BAS", "ENGULFING_BAS", "PIN_BAR_BAS"]:
                     condition_remplie = True
                     conseil = f"VENTE (H1 SMA BAS + M15 SMA BAS | H2: {pattern_h2})"
                     msg = f"SIGNAL VENTE FRACTALE\nTendance H8: {trend_h8} | H4: {trend_h4}\nH1: Croisement SMA 3/10 BAS\nM15: Croisement SMA 3/10 BAS\nPattern H2: {pattern_h2}"
@@ -264,7 +322,6 @@ def analyze_fractale(key, info):
         log(f"📤 SIGNAL {key} - {conseil}")
         send(info["ntfy"], f"ALERTE {key} - {conseil}", full_msg)
         
-        # 5 graphiques
         img_h8 = chart_fractale_sma(candles_h8, [], [], f"{info['name']} H8", cp, dec, None, trend_h8)
         if img_h8:
             time.sleep(1)
@@ -293,7 +350,7 @@ def analyze_fractale(key, info):
         log(f"⏭️ SILENCE {key} - Pas de signal Fractale")
 
 if __name__ == "__main__":
-    log("🚀 FRACTALE BOT - SMA 3/10 (H8+H4+H2+H1+M15)")
+    log("🚀 FRACTALE BOT - Structures de retournement (H8+H4+H2+H1+M15)")
     now = datetime.now(pytz.timezone('Africa/Porto-Novo'))
     h, j = now.hour, now.weekday()
     
