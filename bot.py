@@ -105,96 +105,40 @@ def detect_cross_sma(sma3, sma10):
         return "BAS", True
     return None, False
 
-def detect_trend(candles, period=20):
-    if len(candles) < period:
-        return "INCONNUE", 0
-    closes = np.array([c["c"] for c in candles[-period:]])
-    slope = (closes[-1] - closes[-5]) / closes[-5] if len(closes) >= 5 else 0
-    if slope > 0.001:
-        return "HAUSSIERE", slope
-    elif slope < -0.001:
-        return "BAISSIERE", slope
-    return "LATERALE", slope
-
-def detect_structure_pattern(candles, idx):
-    """Détecte les structures de retournement (2-3 bougies)"""
-    if idx < 2:
+def channel(cd, lb=40):
+    if len(cd) < 20:
         return None
-    
-    c0 = candles[idx-2] if idx >= 2 else None
-    c1 = candles[idx-1]
-    c2 = candles[idx]
-    
-    # ===== 3 BOUGIES =====
-    if c0 and c1 and c2:
-        body0 = abs(c0["c"] - c0["o"])
-        body1 = abs(c1["c"] - c1["o"])
-        body2 = abs(c2["c"] - c2["o"])
-        
-        # Étoile du matin : rouge + doji + verte
-        if c0["c"] < c0["o"] and body1 < (c1["h"] - c1["l"]) * 0.1 and c2["c"] > c2["o"]:
-            return "ETOILE_MATIN"
-        
-        # Étoile du soir : verte + doji + rouge
-        if c0["c"] > c0["o"] and body1 < (c1["h"] - c1["l"]) * 0.1 and c2["c"] < c2["o"]:
-            return "ETOILE_SOIR"
-        
-        # Trois soldats blancs : 3 vertes consécutives
-        if c0["c"] > c0["o"] and c1["c"] > c1["o"] and c2["c"] > c2["o"]:
-            if c1["c"] > c0["c"] and c2["c"] > c1["c"]:
-                return "TROIS_SOLDATS_BLANCS"
-        
-        # Trois corbeaux noirs : 3 rouges consécutives
-        if c0["c"] < c0["o"] and c1["c"] < c1["o"] and c2["c"] < c2["o"]:
-            if c1["c"] < c0["c"] and c2["c"] < c1["c"]:
-                return "TROIS_CORBEAUX_NOIRS"
-    
-    # ===== 2 BOUGIES =====
-    if c1 and c2:
-        body1 = abs(c1["c"] - c1["o"])
-        body2 = abs(c2["c"] - c2["o"])
-        
-        # Harami haussier : rouge + petite verte à l'intérieur
-        if c1["c"] < c1["o"] and c2["c"] > c2["o"]:
-            if c2["h"] <= c1["h"] and c2["l"] >= c1["l"]:
-                return "HARAMI_HAUT"
-        
-        # Harami baissier : verte + petite rouge à l'intérieur
-        if c1["c"] > c1["o"] and c2["c"] < c2["o"]:
-            if c2["h"] <= c1["h"] and c2["l"] >= c1["l"]:
-                return "HARAMI_BAS"
-        
-        # Engulfing haussier : rouge + verte englobante
-        if c1["c"] < c1["o"] and c2["c"] > c2["o"]:
-            if c2["h"] >= c1["h"] and c2["l"] <= c1["l"]:
-                return "ENGULFING_HAUT"
-        
-        # Engulfing baissier : verte + rouge englobante
-        if c1["c"] > c1["o"] and c2["c"] < c2["o"]:
-            if c2["h"] >= c1["h"] and c2["l"] <= c1["l"]:
-                return "ENGULFING_BAS"
-    
-    # ===== 1 BOUGIE =====
-    if c2:
-        body2 = abs(c2["c"] - c2["o"])
-        upper_wick = c2["h"] - max(c2["c"], c2["o"])
-        lower_wick = min(c2["c"], c2["o"]) - c2["l"]
-        
-        # Pin Bar HAUT
-        if lower_wick > body2 * 2 and lower_wick > upper_wick * 2:
-            return "PIN_BAR_HAUT"
-        
-        # Pin Bar BAS
-        if upper_wick > body2 * 2 and upper_wick > lower_wick * 2:
-            return "PIN_BAR_BAS"
-        
-        # Doji
-        if body2 < (c2["h"] - c2["l"]) * 0.1:
-            return "DOJI"
-    
-    return None
+    rc = cd[-lb:] if len(cd) >= lb else cd
+    nr, off = len(rc), len(cd)-len(rc)
+    ph, pl = [], []
+    for i in range(2, nr-2):
+        if all(rc[j]["h"] <= rc[i]["h"] for j in range(max(0,i-2), min(nr,i+3)) if j != i):
+            ph.append((i, rc[i]["h"]))
+        if all(rc[j]["l"] >= rc[i]["l"] for j in range(max(0,i-2), min(nr,i+3)) if j != i):
+            pl.append((i, rc[i]["l"]))
+    cls = [c["c"] for c in rc]
+    sg = np.polyfit(np.arange(nr), cls, 1)[0]
+    if sg >= 0:
+        if len(pl) < 2: return None
+        xs, ys = np.array([p[0] for p in pl]), np.array([p[1] for p in pl])
+    else:
+        if len(ph) < 2: return None
+        xs, ys = np.array([p[0] for p in ph]), np.array([p[1] for p in ph])
+    sl, ic = np.polyfit(xs, ys, 1)
+    xa = np.arange(nr)
+    base = sl*xa + ic
+    hi = np.array([c["h"] for c in rc])
+    lo = np.array([c["l"] for c in rc])
+    return {"x": np.arange(off, len(cd)), "upper": base+np.max(hi-base), "lower": base+np.min(lo-base), "slope": sl}
 
-def chart_fractale_sma(candles, sma3, sma10, title, price, dec=2, cross_type=None, trend=None, pattern=None):
+def detect_long_candle(candle, ratio=2.0):
+    """Détecte une bougie longue (corps > ratio * moyenne)"""
+    body = abs(candle["c"] - candle["o"])
+    if body == 0:
+        return False
+    return body > (candle["h"] - candle["l"]) * 0.5
+
+def chart_fractale(candles, sma3, sma10, title, price, dec=2, signal=None, trend=None):
     if len(candles) < 10:
         return None
     fig, ax = plt.subplots(figsize=(18, 10))
@@ -206,23 +150,23 @@ def chart_fractale_sma(candles, sma3, sma10, title, price, dec=2, cross_type=Non
         ax.plot([i, i], [c["l"], c["h"]], color=col, lw=1.2)
         ax.add_patch(plt.Rectangle((i-0.35, min(c["o"], c["c"])), 0.7, abs(c["c"]-c["o"]) or 0.0001, facecolor=col, edgecolor=col))
     
-    ax.plot(range(len(sma3)), sma3, color='#00b4d8', lw=2, label='SMA 3')
-    ax.plot(range(len(sma10)), sma10, color='#ff6b6b', lw=2, label='SMA 10')
+    if sma3 and sma10:
+        ax.plot(range(len(sma3)), sma3, color='#00b4d8', lw=2, label='SMA 3')
+        ax.plot(range(len(sma10)), sma10, color='#ff6b6b', lw=2, label='SMA 10')
     
     ax.axhline(price, color='#f59e0b', ls='-.', lw=2, alpha=0.7)
     ax.text(len(candles)-1, price, f'  {price:.{dec}f}', color='#f59e0b', fontsize=12, fontweight='bold')
     
-    if pattern:
-        ax.set_title(f"{title} - Pattern: {pattern} | Tendance: {trend}", color='white', fontsize=14, fontweight='bold')
-    elif cross_type:
-        ax.set_title(f"{title} - Croisement SMA {cross_type} | Tendance: {trend}", color='white', fontsize=14, fontweight='bold')
+    if signal:
+        ax.set_title(f"{title} - {signal} | Tendance: {trend}", color='white', fontsize=14, fontweight='bold')
     else:
-        ax.set_title(f"{title} - {trend}", color='white', fontsize=14, fontweight='bold')
+        ax.set_title(f"{title} - Tendance: {trend}", color='white', fontsize=14, fontweight='bold')
     
     ax.set_ylabel("Prix", color='white', fontsize=12)
     ax.tick_params(colors='white')
     ax.grid(True, alpha=0.15, color='gray')
-    ax.legend(loc='upper left', facecolor='#1a1a2e', edgecolor='#555', labelcolor='white', framealpha=0.9)
+    if sma3 and sma10:
+        ax.legend(loc='upper left', facecolor='#1a1a2e', edgecolor='#555', labelcolor='white', framealpha=0.9)
     
     plt.tight_layout(pad=1.5)
     buf = io.BytesIO()
@@ -235,30 +179,12 @@ def analyze_fractale(key, info):
     log(f"🔍 Analyse Fractale {key}...")
     src = info.get("source", "yahoo")
     
+    # Récupérer H2 et H1
     if src == "deriv":
-        candles_h8 = get_candles_deriv(info["symbol"], granularity=28800)
-        candles_h4 = get_candles_deriv(info["symbol"], granularity=14400)
         candles_h2 = get_candles_deriv(info["symbol"], granularity=7200)
         candles_h1 = get_candles_deriv(info["symbol"], granularity=3600)
-        candles_m15 = get_candles_deriv(info["symbol"], granularity=900)
     else:
-        candles_h8 = get_candles(info["symbol"], interval="1h", range_days="60d")
-        if len(candles_h8) >= 8:
-            df = pd.DataFrame(candles_h8)
-            df['t'] = pd.to_datetime(df['t'], unit='s')
-            df.set_index('t', inplace=True)
-            resampled = df.resample('8H').agg({'o': 'first', 'h': 'max', 'l': 'min', 'c': 'last'}).dropna()
-            candles_h8 = [{"t": int(ts.timestamp()), "o": row['o'], "h": row['h'], "l": row['l'], "c": row['c']} for ts, row in resampled.iterrows()]
-            candles_h8 = candles_h8[-50:]
-        candles_h4 = get_candles(info["symbol"], interval="1h", range_days="60d")
-        if len(candles_h4) >= 4:
-            df = pd.DataFrame(candles_h4)
-            df['t'] = pd.to_datetime(df['t'], unit='s')
-            df.set_index('t', inplace=True)
-            resampled = df.resample('4H').agg({'o': 'first', 'h': 'max', 'l': 'min', 'c': 'last'}).dropna()
-            candles_h4 = [{"t": int(ts.timestamp()), "o": row['o'], "h": row['h'], "l": row['l'], "c": row['c']} for ts, row in resampled.iterrows()]
-            candles_h4 = candles_h4[-50:]
-        candles_h2 = get_candles(info["symbol"], interval="1h", range_days="7d")
+        candles_h2 = get_candles(info["symbol"], interval="1h", range_days="60d")
         if len(candles_h2) >= 2:
             df = pd.DataFrame(candles_h2)
             df['t'] = pd.to_datetime(df['t'], unit='s')
@@ -266,55 +192,73 @@ def analyze_fractale(key, info):
             resampled = df.resample('2H').agg({'o': 'first', 'h': 'max', 'l': 'min', 'c': 'last'}).dropna()
             candles_h2 = [{"t": int(ts.timestamp()), "o": row['o'], "h": row['h'], "l": row['l'], "c": row['c']} for ts, row in resampled.iterrows()]
             candles_h2 = candles_h2[-50:]
-        candles_h1 = get_candles(info["symbol"], interval="1h", range_days="3d")
-        candles_m15 = get_candles(info["symbol"], interval="15m", range_days="2d")
+        candles_h1 = get_candles(info["symbol"], interval="1h", range_days="7d")
     
-    if not candles_h8 or not candles_h4 or not candles_h2 or not candles_h1 or not candles_m15:
+    if not candles_h2 or not candles_h1:
         log(f"⚠️ Pas de données pour {key}")
         return
     
-    # Analyses
-    trend_h8, _ = detect_trend(candles_h8)
-    trend_h4, _ = detect_trend(candles_h4)
+    # Canal H2 (tendance)
+    ch_h2 = channel(candles_h2)
+    if ch_h2:
+        if ch_h2["slope"] > 0.0001:
+            tendance = "HAUSSIERE"
+        elif ch_h2["slope"] < -0.0001:
+            tendance = "BAISSIERE"
+        else:
+            tendance = "LATERALE"
+    else:
+        tendance = "INCONNUE"
     
     # SMA H1
     sma3_h1 = calc_sma(candles_h1, 3)
     sma10_h1 = calc_sma(candles_h1, 10)
-    cross_h1, cross_h1_bool = detect_cross_sma(sma3_h1, sma10_h1)
+    cross_type, cross_bool = detect_cross_sma(sma3_h1, sma10_h1)
     
-    # SMA M15
-    sma3_m15 = calc_sma(candles_m15, 3)
-    sma10_m15 = calc_sma(candles_m15, 10)
-    cross_m15, cross_m15_bool = detect_cross_sma(sma3_m15, sma10_m15)
+    # Longue bougie H1
+    last_candle = candles_h1[-1]
+    is_long = detect_long_candle(last_candle)
+    is_green = last_candle["c"] >= last_candle["o"]
+    is_red = last_candle["c"] < last_candle["o"]
     
-    # Pattern H2 (structure de retournement)
-    pattern_h2 = None
-    if len(candles_h2) >= 3:
-        pattern_h2 = detect_structure_pattern(candles_h2, len(candles_h2)-1)
-    
-    cp = candles_m15[-1]["c"]
+    cp = candles_h1[-1]["c"]
     dec = info["dec"]
     
     msg = ""
     conseil = ""
+    signal_type = ""
     condition_remplie = False
     
-    # Conditions
-    if trend_h8 == trend_h4 and trend_h8 != "LATERALE" and trend_h8 != "INCONNUE":
+    # ===== LOGIQUE =====
+    if tendance == "HAUSSIERE":
+        # Signal 1 : Croisement SMA 3/10 HAUT
+        if cross_bool and cross_type == "HAUT":
+            condition_remplie = True
+            signal_type = "CROISEMENT SMA 3/10 HAUT"
+            conseil = "ACHAT (Canal H2 HAUSSIER + Croisement SMA 3/10 HAUT)"
+            msg = f"SIGNAL ACHAT FRACTALE\nTendance H2: HAUSSIERE\nH1: SMA 3 croise au-dessus SMA 10"
         
-        if trend_h8 == "HAUSSIERE":
-            if cross_h1_bool and cross_h1 == "HAUT" and cross_m15_bool and cross_m15 == "HAUT":
-                if pattern_h2 in ["ETOILE_MATIN", "TROIS_SOLDATS_BLANCS", "HARAMI_HAUT", "ENGULFING_HAUT", "PIN_BAR_HAUT"]:
-                    condition_remplie = True
-                    conseil = f"ACHAT (H1 SMA HAUT + M15 SMA HAUT | H2: {pattern_h2})"
-                    msg = f"SIGNAL ACHAT FRACTALE\nTendance H8: {trend_h8} | H4: {trend_h4}\nH1: Croisement SMA 3/10 HAUT\nM15: Croisement SMA 3/10 HAUT\nPattern H2: {pattern_h2}"
+        # Signal 2 : Longue bougie verte
+        elif is_long and is_green:
+            condition_remplie = True
+            signal_type = "LONGUE BOUGIE VERTE"
+            conseil = "ACHAT (Canal H2 HAUSSIER + Longue bougie verte H1)"
+            msg = f"SIGNAL ACHAT FRACTALE\nTendance H2: HAUSSIERE\nH1: Longue bougie verte detectee"
+    
+    elif tendance == "BAISSIERE":
+        # Signal 1 : Croisement SMA 3/10 BAS
+        if cross_bool and cross_type == "BAS":
+            condition_remplie = True
+            signal_type = "CROISEMENT SMA 3/10 BAS"
+            conseil = "VENTE (Canal H2 BAISSIER + Croisement SMA 3/10 BAS)"
+            msg = f"SIGNAL VENTE FRACTALE\nTendance H2: BAISSIERE\nH1: SMA 3 croise en dessous SMA 10"
         
-        elif trend_h8 == "BAISSIERE":
-            if cross_h1_bool and cross_h1 == "BAS" and cross_m15_bool and cross_m15 == "BAS":
-                if pattern_h2 in ["ETOILE_SOIR", "TROIS_CORBEAUX_NOIRS", "HARAMI_BAS", "ENGULFING_BAS", "PIN_BAR_BAS"]:
-                    condition_remplie = True
-                    conseil = f"VENTE (H1 SMA BAS + M15 SMA BAS | H2: {pattern_h2})"
-                    msg = f"SIGNAL VENTE FRACTALE\nTendance H8: {trend_h8} | H4: {trend_h4}\nH1: Croisement SMA 3/10 BAS\nM15: Croisement SMA 3/10 BAS\nPattern H2: {pattern_h2}"
+        # Signal 2 : Longue bougie rouge
+        elif is_long and is_red:
+            condition_remplie = True
+            signal_type = "LONGUE BOUGIE ROUGE"
+            conseil = "VENTE (Canal H2 BAISSIER + Longue bougie rouge H1)"
+            msg = f"SIGNAL VENTE FRACTALE\nTendance H2: BAISSIERE\nH1: Longue bougie rouge detectee"
     
     if condition_remplie:
         full_msg = f"{msg}\n\nPrix: {cp:.{dec}f}\n{datetime.now(pytz.timezone('Africa/Porto-Novo')).strftime('%H:%M')}H Benin\nFractale Bot"
@@ -322,35 +266,22 @@ def analyze_fractale(key, info):
         log(f"📤 SIGNAL {key} - {conseil}")
         send(info["ntfy"], f"ALERTE {key} - {conseil}", full_msg)
         
-        img_h8 = chart_fractale_sma(candles_h8, [], [], f"{info['name']} H8", cp, dec, None, trend_h8)
-        if img_h8:
-            time.sleep(1)
-            send(info["ntfy"], f"{key} H8 - Tendance", f"Tendance {trend_h8}", img_h8)
-        
-        img_h4 = chart_fractale_sma(candles_h4, [], [], f"{info['name']} H4", cp, dec, None, trend_h4)
-        if img_h4:
-            time.sleep(1)
-            send(info["ntfy"], f"{key} H4 - Confirmation", f"Confirmation {trend_h4}", img_h4)
-        
-        img_h2 = chart_fractale_sma(candles_h2, [], [], f"{info['name']} H2", cp, dec, None, pattern_h2)
+        # Graphique H2
+        img_h2 = chart_fractale(candles_h2, None, None, f"{info['name']} H2 - Canal", cp, dec, None, tendance)
         if img_h2:
             time.sleep(1)
-            send(info["ntfy"], f"{key} H2 - Pattern", f"Pattern {pattern_h2}", img_h2)
+            send(info["ntfy"], f"{key} H2 - Canal", f"Canal {tendance}", img_h2)
         
-        img_h1 = chart_fractale_sma(candles_h1, sma3_h1, sma10_h1, f"{info['name']} H1", cp, dec, cross_h1, trend_h4)
+        # Graphique H1 avec SMA
+        img_h1 = chart_fractale(candles_h1, sma3_h1, sma10_h1, f"{info['name']} H1 - {signal_type}", cp, dec, signal_type, tendance)
         if img_h1:
             time.sleep(1)
-            send(info["ntfy"], f"{key} H1 - SMA", f"Croisement SMA 3/10 {cross_h1}", img_h1)
-        
-        img_m15 = chart_fractale_sma(candles_m15, sma3_m15, sma10_m15, f"{info['name']} M15", cp, dec, cross_m15, trend_h4)
-        if img_m15:
-            time.sleep(1)
-            send(info["ntfy"], f"{key} M15 - SMA", f"Croisement SMA 3/10 {cross_m15}", img_m15)
+            send(info["ntfy"], f"{key} H1 - Signal", signal_type, img_h1)
     else:
         log(f"⏭️ SILENCE {key} - Pas de signal Fractale")
 
 if __name__ == "__main__":
-    log("🚀 FRACTALE BOT - Structures de retournement (H8+H4+H2+H1+M15)")
+    log("🚀 FRACTALE BOT - H2 (canal) + H1 (SMA 3/10 ou longue bougie)")
     now = datetime.now(pytz.timezone('Africa/Porto-Novo'))
     h, j = now.hour, now.weekday()
     
