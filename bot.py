@@ -131,12 +131,13 @@ def channel(cd, lb=40):
     lo = np.array([c["l"] for c in rc])
     return {"x": np.arange(off, len(cd)), "upper": base+np.max(hi-base), "lower": base+np.min(lo-base), "slope": sl}
 
-def detect_long_candle(candle, ratio=2.0):
-    """Détecte une bougie longue (corps > ratio * moyenne)"""
+def detect_long_candle(candle, prev_candle, ratio=2.0):
+    """Détecte une bougie longue par rapport à la bougie précédente"""
     body = abs(candle["c"] - candle["o"])
-    if body == 0:
+    prev_body = abs(prev_candle["c"] - prev_candle["o"])
+    if prev_body == 0:
         return False
-    return body > (candle["h"] - candle["l"]) * 0.5
+    return body > prev_body * ratio
 
 def chart_fractale(candles, sma3, sma10, title, price, dec=2, signal=None, trend=None):
     if len(candles) < 10:
@@ -179,7 +180,6 @@ def analyze_fractale(key, info):
     log(f"🔍 Analyse Fractale {key}...")
     src = info.get("source", "yahoo")
     
-    # Récupérer H2 et H1
     if src == "deriv":
         candles_h2 = get_candles_deriv(info["symbol"], granularity=7200)
         candles_h1 = get_candles_deriv(info["symbol"], granularity=3600)
@@ -198,7 +198,7 @@ def analyze_fractale(key, info):
         log(f"⚠️ Pas de données pour {key}")
         return
     
-    # Canal H2 (tendance)
+    # Canal H2
     ch_h2 = channel(candles_h2)
     if ch_h2:
         if ch_h2["slope"] > 0.0001:
@@ -215,9 +215,10 @@ def analyze_fractale(key, info):
     sma10_h1 = calc_sma(candles_h1, 10)
     cross_type, cross_bool = detect_cross_sma(sma3_h1, sma10_h1)
     
-    # Longue bougie H1
+    # Longue bougie H1 (comparée à la précédente)
     last_candle = candles_h1[-1]
-    is_long = detect_long_candle(last_candle)
+    prev_candle = candles_h1[-2] if len(candles_h1) >= 2 else last_candle
+    is_long = detect_long_candle(last_candle, prev_candle, ratio=2.0)
     is_green = last_candle["c"] >= last_candle["o"]
     is_red = last_candle["c"] < last_candle["o"]
     
@@ -229,50 +230,41 @@ def analyze_fractale(key, info):
     signal_type = ""
     condition_remplie = False
     
-    # ===== LOGIQUE =====
     if tendance == "HAUSSIERE":
-        # Signal 1 : Croisement SMA 3/10 HAUT
         if cross_bool and cross_type == "HAUT":
             condition_remplie = True
             signal_type = "CROISEMENT SMA 3/10 HAUT"
             conseil = "ACHAT (Canal H2 HAUSSIER + Croisement SMA 3/10 HAUT)"
             msg = f"SIGNAL ACHAT FRACTALE\nTendance H2: HAUSSIERE\nH1: SMA 3 croise au-dessus SMA 10"
-        
-        # Signal 2 : Longue bougie verte
         elif is_long and is_green:
             condition_remplie = True
             signal_type = "LONGUE BOUGIE VERTE"
             conseil = "ACHAT (Canal H2 HAUSSIER + Longue bougie verte H1)"
-            msg = f"SIGNAL ACHAT FRACTALE\nTendance H2: HAUSSIERE\nH1: Longue bougie verte detectee"
+            msg = f"SIGNAL ACHAT FRACTALE\nTendance H2: HAUSSIERE\nH1: Longue bougie verte detectee (2x precedente)"
     
     elif tendance == "BAISSIERE":
-        # Signal 1 : Croisement SMA 3/10 BAS
         if cross_bool and cross_type == "BAS":
             condition_remplie = True
             signal_type = "CROISEMENT SMA 3/10 BAS"
             conseil = "VENTE (Canal H2 BAISSIER + Croisement SMA 3/10 BAS)"
             msg = f"SIGNAL VENTE FRACTALE\nTendance H2: BAISSIERE\nH1: SMA 3 croise en dessous SMA 10"
-        
-        # Signal 2 : Longue bougie rouge
         elif is_long and is_red:
             condition_remplie = True
             signal_type = "LONGUE BOUGIE ROUGE"
             conseil = "VENTE (Canal H2 BAISSIER + Longue bougie rouge H1)"
-            msg = f"SIGNAL VENTE FRACTALE\nTendance H2: BAISSIERE\nH1: Longue bougie rouge detectee"
+            msg = f"SIGNAL VENTE FRACTALE\nTendance H2: BAISSIERE\nH1: Longue bougie rouge detectee (2x precedente)"
     
     if condition_remplie:
-        full_msg = f"{msg}\n\nPrix: {cp:.{dec}f}\n{datetime.now(pytz.timezone('Africa/Porto-Novo')).strftime('%H:%M')}H Benin\nFractale Bot"
+        full_msg = f"{msg}\n\n💰 Prix: {cp:.{dec}f}\n🕒 {datetime.now(pytz.timezone('Africa/Porto-Novo')).strftime('%H:%M')}H Benin\n🤖 Fractale Bot"
         
         log(f"📤 SIGNAL {key} - {conseil}")
-        send(info["ntfy"], f"ALERTE {key} - {conseil}", full_msg)
+        send(info["ntfy"], f"🚨 {key} - {conseil}", full_msg)
         
-        # Graphique H2
         img_h2 = chart_fractale(candles_h2, None, None, f"{info['name']} H2 - Canal", cp, dec, None, tendance)
         if img_h2:
             time.sleep(1)
             send(info["ntfy"], f"{key} H2 - Canal", f"Canal {tendance}", img_h2)
         
-        # Graphique H1 avec SMA
         img_h1 = chart_fractale(candles_h1, sma3_h1, sma10_h1, f"{info['name']} H1 - {signal_type}", cp, dec, signal_type, tendance)
         if img_h1:
             time.sleep(1)
@@ -281,7 +273,7 @@ def analyze_fractale(key, info):
         log(f"⏭️ SILENCE {key} - Pas de signal Fractale")
 
 if __name__ == "__main__":
-    log("🚀 FRACTALE BOT - H2 (canal) + H1 (SMA 3/10 ou longue bougie)")
+    log("🚀 FRACTALE BOT - H2 (canal) + H1 (SMA 3/10 ou longue bougie 2x)")
     now = datetime.now(pytz.timezone('Africa/Porto-Novo'))
     h, j = now.hour, now.weekday()
     
