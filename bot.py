@@ -56,8 +56,8 @@ def get_candles(sym, interval="1h", range_days="60d"):
         for i in range(len(closes)):
             if closes[i] and opens[i] and highs[i] and lows[i]:
                 candles.append({"t": timestamps[i], "o": opens[i], "h": highs[i], "l": lows[i], "c": closes[i]})
-        candles = candles[-100:] if len(candles) > 100 else candles
-        log(f"✅ Yahoo: {len(candles)} bougies pour {sym} en {interval}")
+        candles = candles[-120:] if len(candles) > 120 else candles
+        log(f"✅ Yahoo: {len(candles)} bougies pour {sym} en {interval} (sur {range_days})")
         return candles
     except Exception as e:
         log(f"❌ Yahoo {sym}: {e}")
@@ -71,7 +71,7 @@ def resample_candles(candles, rule):
     df.set_index('t', inplace=True)
     resampled = df.resample(rule).agg({'o': 'first', 'h': 'max', 'l': 'min', 'c': 'last'}).dropna()
     out = [{"t": int(ts.timestamp()), "o": row['o'], "h": row['h'], "l": row['l'], "c": row['c']} for ts, row in resampled.iterrows()]
-    return out[-60:]
+    return out[-100:]
 
 def calc_atr(candles, period=14):
     if len(candles) < period + 1:
@@ -152,10 +152,11 @@ def chart_fractale(cd, cp, info, title_suffix="", sl_price=None):
     return buf.getvalue()
 
 def analyze_fractale(key, info):
-    log(f"🔍 Analyse Fractale Multi-TF (H8+H4+H2+H1) pour {key}...")
-    candles_h1 = get_candles(info["symbol"], interval="1h", range_days="15d")
-    if not candles_h1 or len(candles_h1) < 40:
-        log(f"⚠️ Données H1 insuffisantes pour {key}")
+    log(f"🔍 Analyse Fractale Multi-TF (H8+H4+H2+H1) avec historique élargi pour {key}...")
+    # On charge un historique large de 60 jours en H1 pour nourrir proprement toutes les unités supérieures
+    candles_h1 = get_candles(info["symbol"], interval="1h", range_days="60d")
+    if not candles_h1 or len(candles_h1) < 50:
+        log(f"⚠️ Données insuffisantes pour {key}")
         return
 
     candles_h2 = resample_candles(candles_h1, '2H')
@@ -207,7 +208,7 @@ def analyze_fractale(key, info):
         log(f"📤 SIGNAL {key} - {conseil}")
         send(info["ntfy"], f"ALERTE {key} - {conseil}", full_msg)
 
-        img_h8 = chart_fractale(candles_h8, cp, info, "Canal Macro H8", sl_price)
+        img_h8 = chart_fractale(candles_h8, cp, info, "Canal Macro H8 (60j)", sl_price)
         if img_h8:
             time.sleep(1)
             send(info["ntfy"], f"{key} H8 - Macro", "Canal H8", img_h8)
@@ -220,7 +221,7 @@ def analyze_fractale(key, info):
         log(f"⏭️ SILENCE {key} - Pas d'alignement complet H8->H2 ou pas de cassure H1")
 
 if __name__ == "__main__":
-    log("🚀 FRACTALE BOT PRO - Cascades H8 + H4 + H2 + H1 + ATR + SL")
+    log("🚀 FRACTALE BOT PRO (60J) - Cascades H8 + H4 + H2 + H1 + ATR + SL")
     now = datetime.now(pytz.timezone('Africa/Porto-Novo'))
     h, j = now.hour, now.weekday()
 
